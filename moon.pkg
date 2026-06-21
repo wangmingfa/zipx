@@ -1,0 +1,10 @@
+import {
+  "moonbitlang/core/builtin",
+  "moonbitlang/core/encoding/utf8",
+}
+
+import {
+  "moonbitlang/async",
+  "moonbitlang/async/fs",
+  "moonbitlang/async/process",
+} for "test"

@@ -1,0 +1,96 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "wangmingfa/zipx"
+
+// Values
+pub fn inflate(Bytes) -> Bytes
+
+pub fn unzip_file(Bytes) -> Array[(String, Bytes)] raise
+
+pub fn zip_file_extract(ZipFile, Int) -> (String, Bytes) raise
+
+pub fn zip_file_list(ZipFile) -> Array[String]
+
+pub fn zip_file_open(Bytes) -> ZipFile raise
+
+// Errors
+
+// Types and methods
+pub struct BitReader {
+  data : Bytes
+  mut pos : Int
+  mut bit_pos : Int
+}
+
+pub struct CentralDirectoryFileHeader {
+  signature : UInt
+  version_made_by : UInt16
+  version_needed : UInt16
+  flags : UInt16
+  compression_method : CompressionMethod
+  last_mod_time : UInt16
+  last_mod_date : UInt16
+  crc32 : UInt
+  compressed_size : UInt
+  uncompressed_size : UInt
+  filename_length : UInt16
+  extra_field_length : UInt16
+  comment_length : UInt16
+  disk_number_start : UInt16
+  internal_file_attrs : UInt16
+  external_file_attrs : UInt
+  local_header_offset : UInt
+  filename : String
+  extra_field : Bytes
+  comment : String
+}
+
+pub enum CompressionMethod {
+  Stored
+  Deflated
+  Unsupported(UInt16)
+}
+
+pub struct EndOfCentralDirectoryRecord {
+  signature : UInt
+  disk_number : UInt16
+  cd_start_disk : UInt16
+  cd_entries_on_disk : UInt16
+  cd_entries_total : UInt16
+  cd_size : UInt
+  cd_offset : UInt
+  comment_length : UInt16
+  comment : String
+}
+
+pub struct HuffmanTree {
+  codes : Array[Int]
+  lengths : Array[Int]
+  max_code_len : Int
+}
+
+pub struct LocalFileHeader {
+  signature : UInt
+  version_needed : UInt16
+  flags : UInt16
+  compression_method : CompressionMethod
+  last_mod_time : UInt16
+  last_mod_date : UInt16
+  crc32 : UInt
+  compressed_size : UInt
+  uncompressed_size : UInt
+  filename_length : UInt16
+  extra_field_length : UInt16
+  filename : String
+  extra_field : Bytes
+}
+
+pub struct ZipFile {
+  data : Bytes
+  eocd : EndOfCentralDirectoryRecord
+  cd_entries : Array[CentralDirectoryFileHeader]
+}
+
+// Type aliases
+
+// Traits
+
