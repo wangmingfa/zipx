@@ -1,4 +1,38 @@
+/// # zipx - Pure MoonBit ZIP Extraction Library
+///
+/// A pure MoonBit implementation of ZIP archive extraction with no FFI
+/// and no system command dependencies.
+///
+/// ## Basic Usage
+///
+/// Extract all files from a ZIP archive:
+///
+/// ```moonbit nocheck
+/// let zip_data = @fs.read_file("archive.zip").binary()
+/// let files = unzip_file(zip_data)
+/// for (name, data) in files.iter() {
+///   println("Extracted: " + name)
+/// }
+/// ```
+///
+/// List files without extracting:
+///
+/// ```moonbit nocheck
+/// let zip = zip_file_open(zip_data)
+/// let names = zip_file_list(zip)
+/// for name in names.iter() {
+///   println(name)
+/// }
+/// ```
+
 ///|
+/// ## Compression Method
+///
+/// The compression method used in a ZIP file entry.
+///
+/// - `Stored`: No compression (stored as-is)
+/// - `Deflated`: DEFLATE compression
+/// - `Unsupported(UInt16)`: Unsupported compression method
 pub enum CompressionMethod {
   Stored
   Deflated
@@ -6,23 +40,10 @@ pub enum CompressionMethod {
 }
 
 ///|
-pub struct LocalFileHeader {
-  signature : UInt
-  version_needed : UInt16
-  flags : UInt16
-  compression_method : CompressionMethod
-  last_mod_time : UInt16
-  last_mod_date : UInt16
-  crc32 : UInt
-  compressed_size : UInt
-  uncompressed_size : UInt
-  filename_length : UInt16
-  extra_field_length : UInt16
-  filename : String
-  extra_field : Bytes
-}
-
-///|
+/// ## Central Directory File Header
+///
+/// Represents a file entry in the ZIP archive's central directory.
+/// Contains metadata about each file in the archive.
 pub struct CentralDirectoryFileHeader {
   signature : UInt
   version_made_by : UInt16
@@ -47,574 +68,10 @@ pub struct CentralDirectoryFileHeader {
 }
 
 ///|
-pub struct EndOfCentralDirectoryRecord {
-  signature : UInt
-  disk_number : UInt16
-  cd_start_disk : UInt16
-  cd_entries_on_disk : UInt16
-  cd_entries_total : UInt16
-  cd_size : UInt
-  cd_offset : UInt
-  comment_length : UInt16
-  comment : String
-}
-
-///|
-pub struct BitReader {
-  data : Bytes
-  mut pos : Int
-  mut bit_pos : Int
-}
-
-///|
-fn BitReader::new(data : Bytes) -> BitReader {
-  BitReader::{ data, pos: 0, bit_pos: 0 }
-}
-
-///|
-fn BitReader::read_bits(self : BitReader, n : Int) -> UInt {
-  if n <= 0 {
-    0
-  } else {
-    let mut result : UInt = 0
-    let mut remaining : Int = n
-    while remaining > 0 {
-      if self.pos >= self.data.length() {
-        return result
-      } else {
-        let byte : UInt = self.data[self.pos].to_uint()
-        let bits_in_byte : Int = 8 - self.bit_pos
-        let take : Int = if remaining < bits_in_byte {
-          remaining
-        } else {
-          bits_in_byte
-        }
-        let mask : UInt = ((1 << take) - 1) << (bits_in_byte - take)
-        result = (result << take) | ((byte & mask) >> (bits_in_byte - take))
-        self.bit_pos = self.bit_pos + take
-        if self.bit_pos >= 8 {
-          self.bit_pos = 0
-          self.pos = self.pos + 1
-        }
-        remaining = remaining - take
-      }
-    }
-    result
-  }
-}
-
-///|
-fn BitReader::align_to_byte(self : BitReader) -> Unit {
-  if self.bit_pos != 0 {
-    self.bit_pos = 0
-    self.pos = self.pos + 1
-  }
-}
-
-///|
-fn BitReader::read_bytes(self : BitReader, n : Int) -> Bytes {
-  let start : Int = self.pos
-  let end : Int = if start + n <= self.data.length() {
-    start + n
-  } else {
-    self.data.length()
-  }
-  self.pos = end
-  match self.data.get_view(start~, end~) {
-    None => Bytes::new(0)
-    Some(v) => v.to_owned()
-  }
-}
-
-///|
-pub struct HuffmanTree {
-  codes : Array[Int]
-  lengths : Array[Int]
-  max_code_len : Int
-}
-
-///|
-fn HuffmanTree::new(code_lengths : Array[Int], max_code : Int) -> HuffmanTree {
-  let len : Int = max_code + 1
-  let codes : Array[Int] = Array::make(len, 0)
-  let lengths : Array[Int] = Array::make(len, 0)
-
-  let mut code : Int = 0
-  let prev_len : Int = code_lengths[0]
-
-  for i in 0..<len {
-    let current_len : Int = code_lengths[i]
-    if current_len != 0 {
-      if i > 0 && current_len < prev_len {
-        code = code << (prev_len - current_len)
-      } else if i > 0 && current_len > prev_len {
-        code = code + 1
-        code = code << (current_len - prev_len)
-      } else if i > 0 {
-        code = code + 1
-      }
-      codes[i] = code
-      lengths[i] = current_len
-    }
-  }
-
-  let mut max_code_len : Int = 0
-  for i in 0..<len {
-    if lengths[i] > max_code_len {
-      max_code_len = lengths[i]
-    }
-  }
-
-  HuffmanTree::{ codes, lengths, max_code_len }
-}
-
-///|
-fn HuffmanTree::decode(self : HuffmanTree, br : BitReader) -> Int {
-  let mut bits : UInt = 0
-  let mut len : Int = 0
-
-  while len < self.max_code_len {
-    bits = (bits << 1) | br.read_bits(1)
-    len = len + 1
-
-    for i in 0..<self.codes.length() {
-      if self.lengths[i] == len && self.codes[i] == bits.reinterpret_as_int() {
-        return i
-      }
-    }
-  }
-
-  -1
-}
-
-///|
-fn inflate_block(br : BitReader, result : Array[Byte]) -> Bool {
-  let bfinal : Int = br.read_bits(1).reinterpret_as_int()
-  let btype : Int = br.read_bits(2).reinterpret_as_int()
-
-  if btype == 0 {
-    br.align_to_byte()
-    let len : UInt16 = br.read_bits(16).to_uint16()
-    let nlen : UInt16 = br.read_bits(16).to_uint16()
-    if (len ^ 0xFFFF) != nlen {
-      false
-    } else {
-      let data : Bytes = br.read_bytes(len.to_int())
-      for b in data.iter() {
-        result.push(b)
-      }
-      bfinal != 0
-    }
-  } else if btype == 1 || btype == 2 {
-    let literal_len_count : Int = if btype == 1 { 288 } else { 286 }
-    let dist_count : Int = if btype == 1 { 32 } else { 30 }
-
-    let literal_code_lengths : Array[Int] = Array::make(literal_len_count, 0)
-    let dist_code_lengths : Array[Int] = Array::make(dist_count, 0)
-
-    if btype == 2 {
-      let hlit : Int = br.read_bits(5).reinterpret_as_int() + 257
-      let hdist : Int = br.read_bits(5).reinterpret_as_int() + 1
-      let hclen : Int = br.read_bits(4).reinterpret_as_int() + 4
-
-      let code_length_code_lengths : Array[Int] = Array::make(19, 0)
-      let order : Array[Int] = [
-        16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15,
-      ]
-
-      for i in 0..<hclen {
-        code_length_code_lengths[order[i]] = br
-          .read_bits(3)
-          .reinterpret_as_int()
-      }
-
-      let code_length_tree : HuffmanTree = HuffmanTree::new(
-        code_length_code_lengths, 18,
-      )
-
-      let mut pos : Int = 0
-      while pos < hlit + hdist {
-        let code : Int = code_length_tree.decode(br)
-        if code == -1 {
-          return false
-        } else if code < 16 {
-          if pos < hlit {
-            literal_code_lengths[pos] = code
-          } else {
-            dist_code_lengths[pos - hlit] = code
-          }
-          pos = pos + 1
-        } else if code == 16 {
-          let repeat : Int = 3 + br.read_bits(2).reinterpret_as_int()
-          let prev : Int = if pos > 0 {
-            if pos <= hlit {
-              literal_code_lengths[pos - 1]
-            } else {
-              dist_code_lengths[pos - hlit - 1]
-            }
-          } else {
-            0
-          }
-          for _ in 0..<repeat {
-            if pos < hlit {
-              literal_code_lengths[pos] = prev
-            } else {
-              dist_code_lengths[pos - hlit] = prev
-            }
-            pos = pos + 1
-          }
-        } else if code == 17 {
-          let repeat : Int = 3 + br.read_bits(3).reinterpret_as_int()
-          for _ in 0..<repeat {
-            if pos < hlit {
-              literal_code_lengths[pos] = 0
-            } else {
-              dist_code_lengths[pos - hlit] = 0
-            }
-            pos = pos + 1
-          }
-        } else if code == 18 {
-          let repeat : Int = 11 + br.read_bits(7).reinterpret_as_int()
-          for _ in 0..<repeat {
-            if pos < hlit {
-              literal_code_lengths[pos] = 0
-            } else {
-              dist_code_lengths[pos - hlit] = 0
-            }
-            pos = pos + 1
-          }
-        }
-      }
-    } else {
-      for i in 0..<288 {
-        if i >= 0 && i <= 143 {
-          literal_code_lengths[i] = 8
-        } else if i >= 144 && i <= 255 {
-          literal_code_lengths[i] = 9
-        } else if i >= 256 && i <= 279 {
-          literal_code_lengths[i] = 7
-        } else {
-          literal_code_lengths[i] = 8
-        }
-      }
-      for i in 0..<32 {
-        dist_code_lengths[i] = 5
-      }
-    }
-
-    let literal_tree : HuffmanTree = HuffmanTree::new(
-      literal_code_lengths,
-      literal_len_count - 1,
-    )
-    let dist_tree : HuffmanTree = HuffmanTree::new(
-      dist_code_lengths,
-      dist_count - 1,
-    )
-
-    let keep_going : Bool = true
-    while keep_going {
-      let code : Int = literal_tree.decode(br)
-      if code == -1 {
-        return false
-      } else if code == 256 {
-        return bfinal != 0
-      } else if code < 256 {
-        result.push(code.to_byte())
-      } else {
-        let len_val : Int = code - 257
-        let base_len : Int = if len_val < 4 {
-          len_val + 3
-        } else if len_val < 28 {
-          let extra_bits : Int = (len_val - 2) / 4
-          let offset : Int = (len_val - 2) % 4 * (1 << extra_bits)
-          offset +
-          3 +
-          (1 << extra_bits) +
-          br.read_bits(extra_bits).reinterpret_as_int()
-        } else {
-          let extra_bits : Int = 1 + br.read_bits(2).reinterpret_as_int()
-          138 + br.read_bits(extra_bits).reinterpret_as_int()
-        }
-
-        let dist_code : Int = dist_tree.decode(br)
-        if dist_code == -1 {
-          return false
-        } else {
-          let dist : Int = if dist_code < 4 {
-            dist_code + 1
-          } else {
-            let extra_bits : Int = dist_code / 2 - 1
-            let offset : Int = (dist_code % 2) << extra_bits
-            offset +
-            1 +
-            (1 << extra_bits) +
-            br.read_bits(extra_bits).reinterpret_as_int()
-          }
-
-          let start : Int = result.length() - dist
-          for i in 0..<base_len {
-            let idx : Int = start + i
-            if idx >= 0 && idx < result.length() {
-              result.push(result[idx])
-            }
-          }
-        }
-      }
-    }
-    true
-  } else {
-    false
-  }
-}
-
-///|
-pub fn inflate(data : Bytes) -> Bytes {
-  let br : BitReader = BitReader::new(data)
-  let result : Array[Byte] = Array::new()
-
-  while br.pos < br.data.length() {
-    let done : Bool = inflate_block(br, result)
-    if done {
-      break
-    }
-  }
-
-  Bytes::from_iter(result.iter())
-}
-
-///|
-fn read_u16(data : Bytes, offset : Int) -> UInt16 {
-  if offset + 1 >= data.length() {
-    0
-  } else {
-    data[offset].to_uint16() | (data[offset + 1].to_uint16() << 8)
-  }
-}
-
-///|
-fn read_u32(data : Bytes, offset : Int) -> UInt {
-  if offset + 4 > data.length() {
-    0
-  } else {
-    data[offset].to_uint() |
-    (data[offset + 1].to_uint() << 8) |
-    (data[offset + 2].to_uint() << 16) |
-    (data[offset + 3].to_uint() << 24)
-  }
-}
-
-///|
-fn parse_compression_method(method_val : UInt16) -> CompressionMethod {
-  match method_val {
-    0 => CompressionMethod::Stored
-    8 => CompressionMethod::Deflated
-    m => CompressionMethod::Unsupported(m)
-  }
-}
-
-///|
-fn parse_local_file_header(data : Bytes, offset : Int) -> LocalFileHeader? {
-  if offset + 30 > data.length() {
-    None
-  } else {
-    let signature : UInt = read_u32(data, offset)
-    if signature != 0x04034B50 {
-      None
-    } else {
-      let version_needed : UInt16 = read_u16(data, offset + 4)
-      let flags : UInt16 = read_u16(data, offset + 6)
-      let compression_method : CompressionMethod = parse_compression_method(
-        read_u16(data, offset + 8),
-      )
-      let last_mod_time : UInt16 = read_u16(data, offset + 10)
-      let last_mod_date : UInt16 = read_u16(data, offset + 12)
-      let crc32 : UInt = read_u32(data, offset + 14)
-      let compressed_size : UInt = read_u32(data, offset + 18)
-      let uncompressed_size : UInt = read_u32(data, offset + 22)
-      let filename_length : UInt16 = read_u16(data, offset + 26)
-      let extra_field_length : UInt16 = read_u16(data, offset + 28)
-
-      let header_size : Int = 30 +
-        filename_length.to_int() +
-        extra_field_length.to_int()
-      if offset + header_size > data.length() {
-        None
-      } else {
-        let filename_view = data.get_view(
-          start=offset + 30,
-          end=offset + 30 + filename_length.to_int(),
-        )
-        let extra_field_view = data.get_view(
-          start=offset + 30 + filename_length.to_int(),
-          end=offset + header_size,
-        )
-
-        match (filename_view, extra_field_view) {
-          (Some(fv), Some(ev)) =>
-            Some(LocalFileHeader::{
-              signature,
-              version_needed,
-              flags,
-              compression_method,
-              last_mod_time,
-              last_mod_date,
-              crc32,
-              compressed_size,
-              uncompressed_size,
-              filename_length,
-              extra_field_length,
-              filename: @utf8.decode_lossy(fv),
-              extra_field: ev.to_owned(),
-            })
-          _ => None
-        }
-      }
-    }
-  }
-}
-
-///|
-fn parse_central_directory_file_header(
-  data : Bytes,
-  offset : Int,
-) -> CentralDirectoryFileHeader? {
-  if offset + 46 > data.length() {
-    None
-  } else {
-    let signature : UInt = read_u32(data, offset)
-    if signature != 0x02014B50 {
-      None
-    } else {
-      let version_made_by : UInt16 = read_u16(data, offset + 4)
-      let version_needed : UInt16 = read_u16(data, offset + 6)
-      let flags : UInt16 = read_u16(data, offset + 8)
-      let compression_method : CompressionMethod = parse_compression_method(
-        read_u16(data, offset + 10),
-      )
-      let last_mod_time : UInt16 = read_u16(data, offset + 12)
-      let last_mod_date : UInt16 = read_u16(data, offset + 14)
-      let crc32 : UInt = read_u32(data, offset + 16)
-      let compressed_size : UInt = read_u32(data, offset + 20)
-      let uncompressed_size : UInt = read_u32(data, offset + 24)
-      let filename_length : UInt16 = read_u16(data, offset + 28)
-      let extra_field_length : UInt16 = read_u16(data, offset + 30)
-      let comment_length : UInt16 = read_u16(data, offset + 32)
-      let disk_number_start : UInt16 = read_u16(data, offset + 34)
-      let internal_file_attrs : UInt16 = read_u16(data, offset + 36)
-      let external_file_attrs : UInt = read_u32(data, offset + 38)
-      let local_header_offset : UInt = read_u32(data, offset + 42)
-
-      let header_size : Int = 46 +
-        filename_length.to_int() +
-        extra_field_length.to_int() +
-        comment_length.to_int()
-      if offset + header_size > data.length() {
-        None
-      } else {
-        let filename_view = data.get_view(
-          start=offset + 46,
-          end=offset + 46 + filename_length.to_int(),
-        )
-        let extra_field_view = data.get_view(
-          start=offset + 46 + filename_length.to_int(),
-          end=offset +
-            46 +
-            filename_length.to_int() +
-            extra_field_length.to_int(),
-        )
-        let comment_view = data.get_view(
-          start=offset +
-            46 +
-            filename_length.to_int() +
-            extra_field_length.to_int(),
-          end=offset + header_size,
-        )
-
-        match (filename_view, extra_field_view, comment_view) {
-          (Some(fv), Some(ev), Some(cv)) =>
-            Some(CentralDirectoryFileHeader::{
-              signature,
-              version_made_by,
-              version_needed,
-              flags,
-              compression_method,
-              last_mod_time,
-              last_mod_date,
-              crc32,
-              compressed_size,
-              uncompressed_size,
-              filename_length,
-              extra_field_length,
-              comment_length,
-              disk_number_start,
-              internal_file_attrs,
-              external_file_attrs,
-              local_header_offset,
-              filename: @utf8.decode_lossy(fv),
-              extra_field: ev.to_owned(),
-              comment: @utf8.decode_lossy(cv),
-            })
-          _ => None
-        }
-      }
-    }
-  }
-}
-
-///|
-fn parse_end_of_central_directory_record(
-  data : Bytes,
-) -> EndOfCentralDirectoryRecord? {
-  let len : Int = data.length()
-
-  // 结束记录最小长度是 22 字节
-  if len < 22 {
-    return None
-  }
-
-  // 从文件末尾向前搜索，最多搜索 65536 字节（ZIP 规范允许的最大注释长度）
-  let mut offset : Int = if len > 65536 + 22 { len - 65536 - 22 } else { 0 }
-  while offset <= len - 22 {
-    if read_u32(data, offset) == 0x06054B50 {
-      let comment_length : UInt16 = read_u16(data, offset + 20)
-      // 验证注释长度是否正确（结束记录应该在文件末尾）
-      if offset + 22 + comment_length.to_int() == len {
-        let signature : UInt = read_u32(data, offset)
-        let disk_number : UInt16 = read_u16(data, offset + 4)
-        let cd_start_disk : UInt16 = read_u16(data, offset + 6)
-        let cd_entries_on_disk : UInt16 = read_u16(data, offset + 8)
-        let cd_entries_total : UInt16 = read_u16(data, offset + 10)
-        let cd_size : UInt = read_u32(data, offset + 12)
-        let cd_offset : UInt = read_u32(data, offset + 16)
-        let comment_view = data.get_view(
-          start=offset + 22,
-          end=offset + 22 + comment_length.to_int(),
-        )
-
-        match comment_view {
-          Some(cv) =>
-            return Some(EndOfCentralDirectoryRecord::{
-              signature,
-              disk_number,
-              cd_start_disk,
-              cd_entries_on_disk,
-              cd_entries_total,
-              cd_size,
-              cd_offset,
-              comment_length,
-              comment: @utf8.decode_lossy(cv),
-            })
-          None => ()
-        }
-      }
-    }
-    offset = offset + 1
-  }
-
-  None
-}
-
-///|
+/// ## ZipFile
+///
+/// Represents an open ZIP archive file.
+/// Use `zip_file_open` to create an instance.
 pub struct ZipFile {
   data : Bytes
   eocd : EndOfCentralDirectoryRecord
@@ -622,12 +79,31 @@ pub struct ZipFile {
 }
 
 ///|
+/// ## Open a ZIP File
+///
+/// Opens a ZIP archive from byte data and returns a `ZipFile` handle.
+///
+/// # Parameters
+/// - `data`: The raw bytes of the ZIP file
+///
+/// # Returns
+/// A `ZipFile` handle for reading the archive
+///
+/// # Throws
+/// - If the end of central directory record cannot be found
+/// - If the central directory is corrupted
+///
+/// # Example
+/// ```moonbit nocheck
+/// let zip = zip_file_open(zip_data)
+///
+/// let files = zip_file_list(zip)
+/// ```
 pub fn zip_file_open(data : Bytes) -> ZipFile raise {
   match parse_end_of_central_directory_record(data) {
     None => fail("Cannot find end of central directory record")
     Some(e) => {
       let len : Int = e.cd_entries_total.to_int()
-      // 创建一个空的数组，稍后填充
       let cd_entries : Array[CentralDirectoryFileHeader] = []
 
       let mut offset : Int = e.cd_offset.reinterpret_as_int()
@@ -657,6 +133,26 @@ pub fn zip_file_open(data : Bytes) -> ZipFile raise {
 }
 
 ///|
+/// ## Extract a Single File
+///
+/// Extracts a single file from the ZIP archive by index.
+///
+/// # Parameters
+/// - `zip`: The open ZIP file handle
+/// - `index`: The zero-based index of the file to extract
+///
+/// # Returns
+/// A tuple of `(filename, data)` containing the extracted file
+///
+/// # Throws
+/// - If the index is out of bounds
+/// - If the local file header cannot be found
+/// - If decompression fails
+///
+/// # Example
+/// ```moonbit nocheck
+/// let (filename, data) = zip_file_extract(zip, 0)
+/// ```
 pub fn zip_file_extract(zip : ZipFile, index : Int) -> (String, Bytes) raise {
   if index < 0 || index >= zip.cd_entries.length() {
     fail("Invalid file index")
@@ -697,6 +193,23 @@ pub fn zip_file_extract(zip : ZipFile, index : Int) -> (String, Bytes) raise {
 }
 
 ///|
+/// ## List Files in ZIP
+///
+/// Returns a list of all filenames in the ZIP archive.
+///
+/// # Parameters
+/// - `zip`: The open ZIP file handle
+///
+/// # Returns
+/// An array of filenames in the order they appear in the archive
+///
+/// # Example
+/// ```moonbit nocheck
+/// let files = zip_file_list(zip)
+/// for filename in files.iter() {
+///   println(filename)
+/// }
+/// ```
 pub fn zip_file_list(zip : ZipFile) -> Array[String] {
   let len : Int = zip.cd_entries.length()
   let names : Array[String] = Array::make(len, "")
@@ -709,6 +222,57 @@ pub fn zip_file_list(zip : ZipFile) -> Array[String] {
 }
 
 ///|
+/// ## DEFLATE Decompression
+///
+/// Decompresses DEFLATE-compressed data using the inflate algorithm.
+///
+/// # Parameters
+/// - `data`: The compressed data bytes
+///
+/// # Returns
+/// The decompressed data as Bytes
+///
+/// # Example
+/// ```moonbit nocheck
+/// let decompressed = inflate(compressed_data)
+/// ```
+pub fn inflate(data : Bytes) -> Bytes {
+  let br : BitReader = BitReader::new(data)
+  let result : Array[Byte] = Array::new()
+
+  while br.pos < br.data.length() {
+    let done : Bool = inflate_block(br, result)
+    if done {
+      break
+    }
+  }
+
+  Bytes::from_iter(result.iter())
+}
+
+///|
+/// ## Unzip All Files
+///
+/// Extracts all files from a ZIP archive at once.
+///
+/// # Parameters
+/// - `data`: The raw bytes of the ZIP file
+///
+/// # Returns
+/// An array of tuples `(filename, data)` for all extracted files
+///
+/// # Throws
+/// - If the ZIP file is invalid or corrupted
+/// - If decompression fails for any file
+///
+/// # Example
+/// ```moonbit nocheck
+/// let extracted = unzip_file(zip_data)
+/// for entry in extracted.iter() {
+///   let (filename, data) = entry
+///   println("Extracted: " + filename)
+/// }
+/// ```
 pub fn unzip_file(data : Bytes) -> Array[(String, Bytes)] raise {
   let zip : ZipFile = zip_file_open(data)
   let len : Int = zip.cd_entries.length()
@@ -719,4 +283,36 @@ pub fn unzip_file(data : Bytes) -> Array[(String, Bytes)] raise {
   }
 
   result
+}
+
+///|
+/// ## Unzip from File Path
+///
+/// Extracts all files from a ZIP archive specified by file path.
+/// This is an async function that reads the file from disk.
+///
+/// # Parameters
+/// - `path`: The path to the ZIP file
+///
+/// # Returns
+/// An array of tuples `(filename, data)` for all extracted files
+///
+/// # Throws
+/// - If the file cannot be read
+/// - If the ZIP file is invalid or corrupted
+/// - If decompression fails for any file
+///
+/// # Example
+/// ```moonbit nocheck
+/// async fn {
+///   let extracted = unzip_file_path("/path/to/archive.zip")
+///   for entry in extracted.iter() {
+///     let (filename, data) = entry
+///     println("Extracted: " + filename)
+///   }
+/// }
+/// ```
+pub async fn unzip_file_path(path : String) -> Array[(String, Bytes)] {
+  let data = @fs.read_file(path).binary()
+  unzip_file(data)
 }
