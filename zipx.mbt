@@ -291,8 +291,12 @@ pub fn unzip_file(data : Bytes) -> Array[(String, Bytes)] raise {
 /// Extracts all files from a ZIP archive specified by file path.
 /// This is an async function that reads the file from disk.
 ///
+/// If `output_dir` is provided, files will be written to that directory.
+/// Otherwise, the extracted files are returned as an array.
+///
 /// # Parameters
 /// - `path`: The path to the ZIP file
+/// - `output_dir`: Optional output directory to extract files to
 ///
 /// # Returns
 /// An array of tuples `(filename, data)` for all extracted files
@@ -305,14 +309,68 @@ pub fn unzip_file(data : Bytes) -> Array[(String, Bytes)] raise {
 /// # Example
 /// ```moonbit nocheck
 /// async fn {
+///   // Just get the files in memory
 ///   let extracted = unzip_file_path("/path/to/archive.zip")
-///   for entry in extracted.iter() {
-///     let (filename, data) = entry
-///     println("Extracted: " + filename)
-///   }
+///
+///   // Extract to a directory
+///   let extracted = unzip_file_path("/path/to/archive.zip", output_dir="./output")
 /// }
 /// ```
-pub async fn unzip_file_path(path : String) -> Array[(String, Bytes)] {
+pub async fn unzip_file_path(
+  path : String,
+  output_dir? : String,
+) -> Array[(String, Bytes)] {
   let data = @fs.read_file(path).binary()
-  unzip_file(data)
+  let files = unzip_file(data)
+  match output_dir {
+    Some(dir) => {
+      let exists = @fs.exists(dir)
+      if exists {
+        let kind = @fs.kind(dir)
+        match kind {
+          @fs.FileKind::Directory => ()
+          _ => fail("Output path is not a directory: " + dir)
+        }
+      } else {
+        @fs.mkdir(dir, permission=0o755, recursive=true)
+      }
+
+      for entry in files.iter() {
+        let (filename, file_data) = entry
+        let output_path = dir + "/" + filename
+        if filename.has_suffix("/") {
+          @fs.mkdir(output_path, permission=0o755, recursive=true) catch {
+            _ => ()
+          }
+        } else {
+          let last_slash = find_last_slash(filename)
+          if last_slash >= 0 {
+            let sub_dir = dir + "/" + filename[0:last_slash].to_owned()
+            @fs.mkdir(sub_dir, permission=0o755, recursive=true) catch {
+              _ => ()
+            }
+          }
+          @fs.write_file(output_path, file_data, create_mode=CreateOrTruncate) catch {
+            _ => ()
+          }
+        }
+      }
+      files
+    }
+    None => files
+  }
+}
+
+///|
+fn find_last_slash(s : String) -> Int {
+  let bytes = @utf8.encode(s)
+  let mut last = -1
+  let mut i = 0
+  while i < bytes.length() {
+    if bytes[i].to_uint() == 0x2F {
+      last = i
+    }
+    i = i + 1
+  }
+  last
 }

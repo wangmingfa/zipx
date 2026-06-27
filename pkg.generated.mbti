@@ -6,7 +6,7 @@ pub fn inflate(Bytes) -> Bytes
 
 pub fn unzip_file(Bytes) -> Array[(String, Bytes)] raise
 
-pub async fn unzip_file_path(String) -> Array[(String, Bytes)]
+pub async fn unzip_file_path(String, output_dir? : String) -> Array[(String, Bytes)]
 
 pub fn zip_file_extract(ZipFile, Int) -> (String, Bytes) raise
 

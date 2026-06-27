@@ -26,12 +26,16 @@ moon add wangmingfa/zipx
 import { unzip_file_path } from "wangmingfa/zipx"
 
 async fn {
-  // Extract all files from a ZIP archive by path
+  // Extract all files to memory (no output directory)
   let extracted = unzip_file_path("/path/to/archive.zip")
   for entry in extracted.iter() {
     let (filename, data) = entry
     // Process extracted file...
   }
+
+  // Extract files to a directory
+  let extracted = unzip_file_path("/path/to/archive.zip", output_dir="./output")
+  // Files are written to ./output directory
 }
 ```
 
@@ -71,7 +75,7 @@ moon run cmd/main/ unzip /path/to/archive.zip ./output_dir
 ### `unzip_file_path` (Async)
 
 ```moonbit nocheck
-pub async fn unzip_file_path(path : String) -> Array[(String, Bytes)] raise
+pub async fn unzip_file_path(path : String, output_dir? : String) -> Array[(String, Bytes)] raise
 ```
 
 Extracts all files from a ZIP archive specified by file path.
@@ -79,18 +83,23 @@ This is an async function that reads the file from disk.
 
 **Parameters:**
 - `path`: The path to the ZIP file
+- `output_dir`: Optional output directory to extract files to. If not provided, files are returned in memory.
 
 **Returns:**
 An array of `(filename, data)` tuples for all extracted files
 
+**Behavior:**
+- Without `output_dir`: Returns extracted files in memory
+- With `output_dir`: Writes files to the specified directory AND returns them in memory
+
 **Example:**
 ```moonbit nocheck
 async fn {
+  // Extract to memory only
   let extracted = unzip_file_path("/path/to/archive.zip")
-  for entry in extracted.iter() {
-    let (filename, data) = entry
-    println("Extracted: " + filename)
-  }
+
+  // Extract to directory
+  let extracted = unzip_file_path("/path/to/archive.zip", output_dir="./output")
 }
 ```
 

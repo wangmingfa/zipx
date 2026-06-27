@@ -24,58 +24,14 @@ async fn main {
       println("Unzipping: " + zip_path + " to " + output_dir)
 
       try {
-        // 检查输出目录是否存在
-        let exists = @fs.exists(output_dir)
-        if exists {
-          // 检查是否是目录
-          try {
-            let kind = @fs.kind(output_dir)
-            match kind {
-              @fs.FileKind::Directory => ()
-              _ => {
-                println("Error: " + output_dir + " is not a directory")
-                return
-              }
-            }
-          } catch {
-            _ => {
-              println("Error: " + output_dir + " is not a directory")
-              return
-            }
-          }
-        } else {
-          // 创建目录
-          @fs.mkdir(output_dir, permission=0o755, recursive=true)
-        }
+        let extracted = @zipx.unzip_file_path(zip_path, output_dir~)
 
-        // 读取 zip 文件
-        let zip_data = @fs.read_file(zip_path).binary()
-
-        // 使用 zipx 包解压
-        let extracted = @zipx.unzip_file(zip_data)
-
-        // 写入解压的文件
         for entry in extracted.iter() {
-          let (filename, data) = entry
-          let output_path = output_dir + "/" + filename
-
-          // 检查是否是目录（以 / 结尾）
+          let (filename, _) = entry
           if filename.has_suffix("/") {
-            // 创建目录
-            try {
-              @fs.mkdir(output_path, permission=0o755, recursive=true)
-              println("  Created dir: " + filename)
-            } catch {
-              _ => println("  Skipped dir: " + filename)
-            }
+            println("  Created dir: " + filename)
           } else {
-            // 写入文件
-            try {
-              @fs.write_file(output_path, data, create_mode=CreateOrTruncate)
-              println("  Extracted: " + filename)
-            } catch {
-              e => println("  Failed: " + filename + " (" + e.to_string() + ")")
-            }
+            println("  Extracted: " + filename)
           }
         }
 
